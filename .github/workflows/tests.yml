@@ -27,7 +27,7 @@ jobs:
       SCCACHE_DIR: /home/runner/.cache/sccache
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up prerequisites and environment
         run: |
@@ -53,7 +53,7 @@ jobs:
           echo ""
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: |
@@ -62,7 +62,7 @@ jobs:
           key: pgrx-lintck-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '.github/workflows/tests.yml') }}
 
       - name: Cache sccache directory
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: /home/runner/.cache/sccache
@@ -118,7 +118,7 @@ jobs:
             rust: "beta"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up prerequisites and environment
         run: |
@@ -203,7 +203,7 @@ jobs:
         run: sudo chmod a+rwx `/usr/lib/postgresql/$PG_VER/bin/pg_config --pkglibdir` `/usr/lib/postgresql/$PG_VER/bin/pg_config --sharedir`/extension /var/run/postgresql/
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: |
@@ -212,7 +212,7 @@ jobs:
           key: pgrx-unit-tests-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '.github/workflows/tests.yml') }}
 
       - name: Cache sccache directory
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: /home/runner/.cache/sccache
@@ -324,7 +324,7 @@ jobs:
         postgres: [ 17 ]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up prerequisites and environment
         run: |
@@ -381,7 +381,7 @@ jobs:
         run: sudo chmod a+rwx `/usr/lib/postgresql/$PG_VER/bin/pg_config --pkglibdir` `/usr/lib/postgresql/$PG_VER/bin/pg_config --sharedir`/extension /var/run/postgresql/
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: |
@@ -420,7 +420,7 @@ jobs:
       PG_VER: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up prerequisites and environment
         run: |
@@ -467,7 +467,7 @@ jobs:
           echo ""
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: |
@@ -476,7 +476,7 @@ jobs:
           key: pgrx-cargo_init_tests-cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '.github/workflows/tests.yml') }}
 
       - name: Cache sccache directory
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: /home/runner/.cache/sccache
@@ -565,7 +565,7 @@ jobs:
         env:
           FORMULA: postgresql@${{ matrix.postgresql }}
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up prerequisites and environment
         run: |
@@ -596,14 +596,14 @@ jobs:
 
 
       - name: Cache sccache directory
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: /Users/runner/Library/Caches/Mozilla.sccache
           key: pgrx-sccache-${{matrix.os}}-${{ hashFiles('**/Cargo.lock', '.github/workflows/tests.yml', '.cargo/config.toml') }}
 
       - name: Cache cargo directory
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo
@@ -657,7 +657,7 @@ jobs:
         postgresql: [ 13, 17 ]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up prerequisites and environment
         run: |
@@ -678,14 +678,14 @@ jobs:
 
 
       - name: Cache sccache directory
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         continue-on-error: false
         with:
           path: C:\Users\runneradmin\sccache
           key: pgrx-sccache-${{matrix.os}}-${{ hashFiles('**/Cargo.lock', '.github/workflows/tests.yml', '.cargo/config.toml') }}
 
       - name: Cache cargo directory
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo
