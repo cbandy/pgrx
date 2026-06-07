@@ -16,7 +16,7 @@ updates:
       # Group security updates into one pull request
       action-vulnerabilities:
         applies-to: security-updates
-        patterns: ["*"]
+        patterns: ["*","*","*"]
 
       # Group version updates into one pull request
       github-actions:
