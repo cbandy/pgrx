@@ -22,7 +22,7 @@ jobs:
         pg_version: [ "pg13", "pg14", "pg15", "pg16", "pg17", "pg18" ]
         container: [ "fedora", "debian_bullseye", "alpine" ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up environment variables
         run: |
@@ -54,7 +54,7 @@ jobs:
             echo "NIGHTLY_BUILD_REF=$GITHUB_HEAD_REF" >> $GITHUB_ENV
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.NIGHTLY_BUILD_REF }}
 
