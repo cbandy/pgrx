@@ -10,14 +10,14 @@ This document details the design of a type-safe casting and visitor/walker trave
 
 ---
 
-## 1. Traversal Control Enum
+## 1. Traversal Enum
 
-Using booleans for traversal control (e.g., returning `true` or `false`) is confusing and error-prone. We define a dedicated `TraversalControl` enum:
+We define a dedicated `Traversal` enum to control the flow of the AST walk:
 
 ```rust
 /// Controls the traversal flow of the AST walker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraversalControl {
+pub enum Traversal {
     /// Continue walking the AST tree.
     Continue,
     /// Stop/short-circuit the AST walk early.
@@ -31,7 +31,7 @@ pub enum TraversalControl {
 
 ### 2.1. Safe Upcasting with `AsPgNode`
 
-To avoid manual and repetitive `unsafe` casts to `pg_sys::Node`, we provide the `AsPgNode` trait. This trait is automatically implemented for all supported nodes via the `impl_has_node_tag!` macro.
+To avoid manual and repetitive `unsafe` casts to `pg_sys::Node`, we provide the `AsPgNode` trait. This trait is automatically implemented for all supported nodes via the `has_node_tag!` macro.
 
 ```rust
 pub trait AsPgNode {
@@ -49,14 +49,14 @@ pub trait HasNodeTag: AsPgNode {
     const NODE_TAGS: &'static [pg_sys::NodeTag];
 }
 
-macro_rules! impl_has_node_tag {
+macro_rules! has_node_tag {
     ($struct_name:ident, [$($tag_variant:ident),+]) => { ... };
     ($struct_name:ident, $tag_variant:ident) => { ... };
 }
 
-impl_has_node_tag!(CreateStmt, T_CreateStmt);
-impl_has_node_tag!(RangeVar, T_RangeVar);
-impl_has_node_tag!(List, [T_List, T_IntList, T_OidList, T_XidList]);
+has_node_tag!(CreateStmt, T_CreateStmt);
+has_node_tag!(RangeVar, T_RangeVar);
+has_node_tag!(List, [T_List, T_IntList, T_OidList, T_XidList]);
 // ... other DDL and DML nodes ...
 ```
 
@@ -90,30 +90,30 @@ For DML statements, the visitor provides hooks for `Plan` nodes and auxiliary st
 ```rust
 pub trait PlannedStmtVisitor {
     // ---- Generic catch-all -------------------------------------------------
-    fn visit_node(&mut self, _node: &pg_sys::Node) -> TraversalControl {
-        TraversalControl::Continue
+    fn visit_node(&mut self, _node: &pg_sys::Node) -> Traversal {
+        Traversal::Continue
     }
 
     // ---- DDL / Utility hooks ---------------------------------------------
-    fn visit_create_stmt(&mut self, stmt: &pg_sys::CreateStmt) -> TraversalControl {
-        if self.visit_node(stmt.as_node()).is_break() { return TraversalControl::Break; }
+    fn visit_create_stmt(&mut self, stmt: &pg_sys::CreateStmt) -> Traversal {
+        if self.visit_node(stmt.as_node()).is_break() { return Traversal::Break; }
         stmt.walk(self)
     }
     // ...
 
     // ---- DML / Plan hooks -----------------------------------------------
-    fn visit_plan(&mut self, plan: &pg_sys::Plan) -> TraversalControl {
-        if self.visit_node(plan.as_node()).is_break() { return TraversalControl::Break; }
+    fn visit_plan(&mut self, plan: &pg_sys::Plan) -> Traversal {
+        if self.visit_node(plan.as_node()).is_break() { return Traversal::Break; }
         plan.walk(self)
     }
 
-    fn visit_scan(&mut self, scan: &pg_sys::Scan) -> TraversalControl {
-        if self.visit_plan(&scan.plan).is_break() { return TraversalControl::Break; }
-        TraversalControl::Continue
+    fn visit_scan(&mut self, scan: &pg_sys::Scan) -> Traversal {
+        if self.visit_plan(&scan.plan).is_break() { return Traversal::Break; }
+        Traversal::Continue
     }
 
-    fn visit_seq_scan(&mut self, scan: &pg_sys::SeqScan) -> TraversalControl {
-        if self.visit_scan(&scan.scan).is_break() { return TraversalControl::Break; }
+    fn visit_seq_scan(&mut self, scan: &pg_sys::SeqScan) -> Traversal {
+        if self.visit_scan(&scan.scan).is_break() { return Traversal::Break; }
         scan.walk(self)
     }
     // ...
@@ -122,20 +122,48 @@ pub trait PlannedStmtVisitor {
 
 ---
 
-## 4. Theoretical Evaluation of DML Support
+## 4. Walk Implementations
 
-### 4.1. Appropriateness
-The Visitor pattern is highly appropriate for DML. Programmatic traversal is the standard way in PostgreSQL (e.g., `planstate_tree_walker`) to analyze deep trees of `Plan` nodes.
+### 4.1. `pg_sys::Node` and `pg_sys::PlannedStmt`
 
-### 4.2. Depth of Traversal
-The system prioritizes **Plan Node Traversal** (strategy level), but allows optional descent into expressions via `visit_target_entry` and `visit_plan_qual`.
+```rust
+impl PgNodeWalk for pg_sys::Node {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        match self.type_ {
+            pg_sys::NodeTag::T_CreateStmt => {
+                let stmt = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::CreateStmt) };
+                visitor.visit_create_stmt(stmt)
+            }
+            // ... routing for all supported NodeTags ...
+            _ => visitor.visit_node(self),
+        }
+    }
+}
 
-### 4.3. Range Table and Subplans
-A complete analysis of a DML statement **must** include the Range Table (`rtable`) for relation access and `subplans` for non-flattened subqueries.
+impl PgNodeWalk for pg_sys::PlannedStmt {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if self.commandType == pg_sys::CmdType::CMD_UTILITY && !self.utilityStmt.is_null() {
+            return unsafe { &*self.utilityStmt }.walk(visitor);
+        }
+        // ... walk planTree, rtable, subplans, permInfos, etc. ...
+        Traversal::Continue
+    }
+}
+```
 
 ---
 
-## 5. Concrete Example: Table Access Auditor
+## 5. Theoretical Evaluation of DML Support
+
+### 5.1. Appropriateness
+The Visitor pattern is highly appropriate for DML. Programmatic traversal is the standard way in PostgreSQL to analyze deep trees of `Plan` nodes.
+
+### 5.2. Depth of Traversal
+The system prioritizes **Plan Node Traversal** (strategy level), but allows optional descent into expressions via `visit_target_entry` and `visit_plan_qual`.
+
+---
+
+## 6. Concrete Example: Table Access Auditor
 
 A visitor that identifies all tables accessed by *any* statement (DDL or DML):
 
@@ -146,16 +174,14 @@ pub struct TableAuditor {
 
 impl PlannedStmtVisitor for TableAuditor {
     // For DDL
-    fn visit_range_var(&mut self, rv: &pg_sys::RangeVar) -> TraversalControl {
-        // Safe access to relname
-        if let Some(name) = unsafe { rv.relname.as_ref() } { ... }
-        TraversalControl::Continue
+    fn visit_range_var(&mut self, rv: &pg_sys::RangeVar) -> Traversal {
+        // Safe access to relname via pg_sys utility or CStr
+        Traversal::Continue
     }
 
     // For DML
-    fn visit_range_tbl_entry(&mut self, rte: &pg_sys::RangeTblEntry) -> TraversalControl {
+    fn visit_range_tbl_entry(&mut self, rte: &pg_sys::RangeTblEntry) -> Traversal {
         // Resolve OID to name and collect
-        self.add_relid(rte.relid);
         rte.walk(self) // Recurse into subqueries if any
     }
 }
