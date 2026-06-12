@@ -102,6 +102,14 @@ has_node_tag!(List, [T_List, T_IntList, T_OidList, T_XidList]);
 has_node_tag!(TruncateStmt, T_TruncateStmt);
 has_node_tag!(IndexStmt, T_IndexStmt);
 has_node_tag!(RangeTblEntry, T_RangeTblEntry);
+has_node_tag!(Var, T_Var);
+has_node_tag!(Const, T_Const);
+has_node_tag!(OpExpr, T_OpExpr);
+has_node_tag!(FuncExpr, T_FuncExpr);
+has_node_tag!(BoolExpr, T_BoolExpr);
+has_node_tag!(SubLink, T_SubLink);
+has_node_tag!(SubPlan, T_SubPlan);
+has_node_tag!(ScalarArrayOpExpr, T_ScalarArrayOpExpr);
 has_node_tag!(SeqScan, T_SeqScan);
 has_node_tag!(ModifyTable, T_ModifyTable);
 has_node_tag!(Agg, T_Agg);
@@ -110,6 +118,7 @@ has_node_tag!(TargetEntry, T_TargetEntry);
 has_node_tag!(Append, T_Append);
 has_node_tag!(MergeAppend, T_MergeAppend);
 has_node_tag!(Query, T_Query);
+has_node_tag!(FromExpr, T_FromExpr);
 has_node_tag!(Result, T_Result);
 has_node_tag!(ProjectSet, T_ProjectSet);
 has_node_tag!(IndexScan, T_IndexScan);
@@ -540,6 +549,52 @@ pub trait PlannedStmtVisitor {
         self.visit_list(list)
     }
 
+    // Expr hooks
+    fn visit_var(&mut self, var: &pg_sys::Var) -> Traversal {
+        self.visit_node(var.as_node())
+    }
+    fn visit_const(&mut self, con: &pg_sys::Const) -> Traversal {
+        self.visit_node(con.as_node())
+    }
+    fn visit_op_expr(&mut self, expr: &pg_sys::OpExpr) -> Traversal {
+        if self.visit_node(expr.as_node()).is_break() { return Traversal::Break; }
+        expr.walk(self)
+    }
+    fn visit_func_expr(&mut self, expr: &pg_sys::FuncExpr) -> Traversal {
+        if self.visit_node(expr.as_node()).is_break() { return Traversal::Break; }
+        expr.walk(self)
+    }
+    fn visit_bool_expr(&mut self, expr: &pg_sys::BoolExpr) -> Traversal {
+        if self.visit_node(expr.as_node()).is_break() { return Traversal::Break; }
+        expr.walk(self)
+    }
+    fn visit_sub_link(&mut self, expr: &pg_sys::SubLink) -> Traversal {
+        if self.visit_node(expr.as_node()).is_break() { return Traversal::Break; }
+        expr.walk(self)
+    }
+    fn visit_sub_plan(&mut self, expr: &pg_sys::SubPlan) -> Traversal {
+        if self.visit_node(expr.as_node()).is_break() { return Traversal::Break; }
+        expr.walk(self)
+    }
+    fn visit_scalar_array_op_expr(&mut self, expr: &pg_sys::ScalarArrayOpExpr) -> Traversal {
+        if self.visit_node(expr.as_node()).is_break() { return Traversal::Break; }
+        expr.walk(self)
+    }
+
+    // Query field hooks
+    fn visit_query_cte_list(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+    fn visit_query_rtable(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+    fn visit_query_target_list(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+    fn visit_query_returning_list(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
     // Plan field hooks
     fn visit_plan_target_list(&mut self, list: &pg_sys::List) -> Traversal {
         self.visit_list(list)
@@ -686,6 +741,11 @@ impl PgNodeWalk for pg_sys::Node {
                 let query = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Query) };
                 visitor.visit_query(query)
             }
+            pg_sys::NodeTag::T_FromExpr => {
+                let from = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::FromExpr) };
+                if visitor.visit_node(from.as_node()).is_break() { return Traversal::Break; }
+                from.walk(visitor)
+            }
             pg_sys::NodeTag::T_Result => {
                 let res = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Result) };
                 visitor.visit_result(res)
@@ -817,6 +877,38 @@ impl PgNodeWalk for pg_sys::Node {
             pg_sys::NodeTag::T_SetOp => {
                 let setop = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::SetOp) };
                 visitor.visit_set_op(setop)
+            }
+            pg_sys::NodeTag::T_Var => {
+                let var = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Var) };
+                visitor.visit_var(var)
+            }
+            pg_sys::NodeTag::T_Const => {
+                let con = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Const) };
+                visitor.visit_const(con)
+            }
+            pg_sys::NodeTag::T_OpExpr => {
+                let expr = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::OpExpr) };
+                visitor.visit_op_expr(expr)
+            }
+            pg_sys::NodeTag::T_FuncExpr => {
+                let expr = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::FuncExpr) };
+                visitor.visit_func_expr(expr)
+            }
+            pg_sys::NodeTag::T_BoolExpr => {
+                let expr = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::BoolExpr) };
+                visitor.visit_bool_expr(expr)
+            }
+            pg_sys::NodeTag::T_SubLink => {
+                let expr = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::SubLink) };
+                visitor.visit_sub_link(expr)
+            }
+            pg_sys::NodeTag::T_SubPlan => {
+                let expr = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::SubPlan) };
+                visitor.visit_sub_plan(expr)
+            }
+            pg_sys::NodeTag::T_ScalarArrayOpExpr => {
+                let expr = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::ScalarArrayOpExpr) };
+                visitor.visit_scalar_array_op_expr(expr)
             }
             _ => visitor.visit_node(self),
         }
@@ -978,12 +1070,47 @@ impl PgNodeWalk for pg_sys::Query {
                 return Traversal::Break;
             }
         }
-        if !self.rtable.is_null() {
-            if visitor.visit_list(unsafe { &*self.rtable }).is_break() {
+        if !self.cteList.is_null() {
+            if visitor.visit_query_cte_list(unsafe { &*self.cteList }).is_break() {
                 return Traversal::Break;
             }
         }
-        // Jointree and other fields omitted for now in manual strategy
+        if !self.rtable.is_null() {
+            if visitor.visit_query_rtable(unsafe { &*self.rtable }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        if !self.jointree.is_null() {
+            if unsafe { &*self.jointree }.as_node().walk(visitor).is_break() {
+                return Traversal::Break;
+            }
+        }
+        if !self.targetList.is_null() {
+            if visitor.visit_query_target_list(unsafe { &*self.targetList }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        if !self.returningList.is_null() {
+            if visitor.visit_query_returning_list(unsafe { &*self.returningList }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::FromExpr {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.fromlist.is_null() {
+            if visitor.visit_list(unsafe { &*self.fromlist }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        if !self.quals.is_null() {
+            if unsafe { &*self.quals }.walk(visitor).is_break() {
+                return Traversal::Break;
+            }
+        }
         Traversal::Continue
     }
 }
@@ -1320,6 +1447,85 @@ impl PgNodeWalk for pg_sys::PartitionPruneStepOp {
 
 impl_pg_node_walk!(PartitionPruneStepCombine);
 impl_pg_node_walk!(PlanRowMark);
+
+impl_pg_node_walk!(Var);
+impl_pg_node_walk!(Const);
+
+impl PgNodeWalk for pg_sys::OpExpr {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.args.is_null() {
+            if visitor.visit_list(unsafe { &*self.args }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::FuncExpr {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.args.is_null() {
+            if visitor.visit_list(unsafe { &*self.args }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::BoolExpr {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.args.is_null() {
+            if visitor.visit_list(unsafe { &*self.args }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::SubLink {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.testexpr.is_null() {
+            if unsafe { &*self.testexpr }.walk(visitor).is_break() {
+                return Traversal::Break;
+            }
+        }
+        if !self.subselect.is_null() {
+            if unsafe { &*self.subselect }.walk(visitor).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::SubPlan {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.testexpr.is_null() {
+            if unsafe { &*self.testexpr }.walk(visitor).is_break() {
+                return Traversal::Break;
+            }
+        }
+        if !self.args.is_null() {
+            if visitor.visit_list(unsafe { &*self.args }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::ScalarArrayOpExpr {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.args.is_null() {
+            if visitor.visit_list(unsafe { &*self.args }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
 impl_pg_node_walk!(RTEPermissionInfo);
 
 impl PgNodeWalk for pg_sys::AppendRelInfo {
