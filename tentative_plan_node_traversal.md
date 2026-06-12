@@ -1,10 +1,12 @@
-# Traversing `PlannedStmt` for DDL and Utility Statements in `pgrx`
+# Traversing `PlannedStmt` for DDL, Utility, and DML Statements in `pgrx`
 
-In PostgreSQL, the planner produces a `PlannedStmt` for all statements. While DML statements (like `SELECT`, `UPDATE`, `INSERT`, and `DELETE`) contain structured query plan trees, utility commands (which include DDL statements like `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, and `DROP`) are wrapped inside a `PlannedStmt` with the command type `CmdType::CMD_UTILITY`. In these cases, the raw parse tree is preserved in the `utilityStmt` field as a `pg_sys::Node` pointer.
+In PostgreSQL, the planner produces a `PlannedStmt` for all statements.
+- **Utility/DDL commands** (like `CREATE TABLE`, `ALTER TABLE`, etc.) are wrapped inside a `PlannedStmt` with `commandType == CmdType::CMD_UTILITY`. The raw parse tree is preserved in the `utilityStmt` field.
+- **DML statements** (like `SELECT`, `UPDATE`, `INSERT`, `DELETE`, and `MERGE`) contain structured query plan trees in the `planTree` field, along with auxiliary information like the `rtable` (range table) and `subplans`.
 
-As noted in `postgres/src/backend/nodes/README`, output serialization (such as `nodeToString` or `outNode`) for utility statements and raw parse trees is incomplete and largely unsupported. Therefore, analyzing or inspecting planned DDL statements requires programmatically traversing the in-memory node trees.
+As noted in `postgres/src/backend/nodes/README`, output serialization (such as `nodeToString` or `outNode`) for utility statements and raw parse trees is incomplete and largely unsupported. Therefore, analyzing or inspecting planned statements requires programmatically traversing the in-memory node trees.
 
-This document details the design of a type-safe casting and visitor/walker traversal system in Rust to analyze `PlannedStmt` objects representing DDL and utility statements in `pgrx`.
+This document details the design of a type-safe casting and visitor/walker traversal system in Rust to analyze `PlannedStmt` objects in `pgrx`.
 
 ---
 
@@ -67,6 +69,12 @@ impl_has_node_tag!(TruncateStmt, T_TruncateStmt);
 impl_has_node_tag!(IndexStmt, T_IndexStmt);
 impl_has_node_tag!(RangeVar, T_RangeVar);
 impl_has_node_tag!(List, [T_List, T_IntList, T_OidList, T_XidList]);
+impl_has_node_tag!(RangeTblEntry, T_RangeTblEntry);
+impl_has_node_tag!(SeqScan, T_SeqScan);
+impl_has_node_tag!(ModifyTable, T_ModifyTable);
+impl_has_node_tag!(Agg, T_Agg);
+impl_has_node_tag!(Sort, T_Sort);
+impl_has_node_tag!(TargetEntry, T_TargetEntry);
 ```
 
 ### 2.2. Downcasting Trait
@@ -138,88 +146,39 @@ pub trait PlannedStmtVisitor {
         list.walk(self)
     }
 
-    // ---- Statement-level hooks ---------------------------------------------
-    fn visit_create_stmt(&mut self, stmt: &pg_sys::CreateStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::CreateStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
-        stmt.walk(self)
-    }
+    // ---- Statement-level / DML hooks ---------------------------------------------
+    fn visit_create_stmt(&mut self, stmt: &pg_sys::CreateStmt) -> TraversalControl { ... }
+    fn visit_alter_table_stmt(&mut self, stmt: &pg_sys::AlterTableStmt) -> TraversalControl { ... }
+    fn visit_alter_table_cmd(&mut self, cmd: &pg_sys::AlterTableCmd) -> TraversalControl { ... }
+    fn visit_drop_stmt(&mut self, stmt: &pg_sys::DropStmt) -> TraversalControl { ... }
+    fn visit_truncate_stmt(&mut self, stmt: &pg_sys::TruncateStmt) -> TraversalControl { ... }
+    fn visit_index_stmt(&mut self, stmt: &pg_sys::IndexStmt) -> TraversalControl { ... }
 
-    fn visit_alter_table_stmt(&mut self, stmt: &pg_sys::AlterTableStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::AlterTableStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
-        stmt.walk(self)
+    // ---- DML / Plan hooks -----------------------------------------------
+    fn visit_seq_scan(&mut self, scan: &pg_sys::SeqScan) -> TraversalControl {
+        if self.visit_plan(unsafe { &scan.scan.plan }).is_break() { return TraversalControl::Break; }
+        scan.walk(self)
     }
-
-    fn visit_alter_table_cmd(&mut self, cmd: &pg_sys::AlterTableCmd) -> TraversalControl {
-        let node = unsafe { &*(cmd as *const pg_sys::AlterTableCmd as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
-        cmd.walk(self)
+    fn visit_agg(&mut self, agg: &pg_sys::Agg) -> TraversalControl {
+        if self.visit_plan(&agg.plan).is_break() { return TraversalControl::Break; }
+        agg.walk(self)
     }
-
-    fn visit_drop_stmt(&mut self, stmt: &pg_sys::DropStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::DropStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
-        stmt.walk(self)
-    }
-
-    fn visit_truncate_stmt(&mut self, stmt: &pg_sys::TruncateStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::TruncateStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
-        stmt.walk(self)
-    }
-
-    fn visit_index_stmt(&mut self, stmt: &pg_sys::IndexStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::IndexStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
-        stmt.walk(self)
-    }
+    // ...
 
     // ---- Leaf / shared hooks -----------------------------------------------
-    fn visit_range_var(&mut self, range_var: &pg_sys::RangeVar) -> TraversalControl {
-        let node = unsafe { &*(range_var as *const pg_sys::RangeVar as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
-        range_var.walk(self)
-    }
+    fn visit_range_var(&mut self, range_var: &pg_sys::RangeVar) -> TraversalControl { ... }
+    fn visit_range_tbl_entry(&mut self, rte: &pg_sys::RangeTblEntry) -> TraversalControl { ... }
+    fn visit_target_entry(&mut self, te: &pg_sys::TargetEntry) -> TraversalControl { ... }
 
     // ---- CreateStmt field hooks --------------------------------------------
-    fn visit_create_table_elts(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-    fn visit_create_inh_relations(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-    fn visit_create_constraints(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-    fn visit_create_options(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
+    fn visit_create_table_elts(&mut self, list: &pg_sys::List) -> TraversalControl { self.visit_list(list) }
+    // ...
 
-    // ---- AlterTableStmt field hooks ----------------------------------------
-    fn visit_alter_table_cmds(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-
-    // ---- DropStmt field hooks -----------------------------------------------
-    fn visit_drop_objects(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-
-    // ---- TruncateStmt field hooks ------------------------------------------
-    fn visit_truncate_relations(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-
-    // ---- IndexStmt field hooks ---------------------------------------------
-    fn visit_index_params(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-    fn visit_index_including_params(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
-    }
-    fn visit_index_options(&mut self, list: &pg_sys::List) -> TraversalControl {
-        self.visit_list(list)
+    // ---- PlannedStmt field hooks ------------------------------------------
+    fn visit_planned_stmt_rtable(&mut self, list: &pg_sys::List) -> TraversalControl { self.visit_list(list) }
+    fn visit_planned_stmt_subplans(&mut self, list: &pg_sys::List) -> TraversalControl { self.visit_list(list) }
+    fn visit_planned_stmt_plan_tree(&mut self, plan: &pg_sys::Plan) -> TraversalControl {
+        unsafe { &*(plan as *const pg_sys::Plan as *const pg_sys::Node) }.walk(self)
     }
 }
 ```
@@ -238,36 +197,12 @@ impl PgNodeWalk for pg_sys::Node {
                 let stmt = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::CreateStmt) };
                 visitor.visit_create_stmt(stmt)
             }
-            pg_sys::NodeTag::T_AlterTableStmt => {
-                let stmt = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::AlterTableStmt) };
-                visitor.visit_alter_table_stmt(stmt)
-            }
-            pg_sys::NodeTag::T_AlterTableCmd => {
-                let cmd = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::AlterTableCmd) };
-                visitor.visit_alter_table_cmd(cmd)
-            }
-            pg_sys::NodeTag::T_DropStmt => {
-                let stmt = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::DropStmt) };
-                visitor.visit_drop_stmt(stmt)
-            }
-            pg_sys::NodeTag::T_TruncateStmt => {
-                let stmt = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::TruncateStmt) };
-                visitor.visit_truncate_stmt(stmt)
-            }
-            pg_sys::NodeTag::T_IndexStmt => {
-                let stmt = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::IndexStmt) };
-                visitor.visit_index_stmt(stmt)
-            }
-            pg_sys::NodeTag::T_RangeVar => {
-                let rv = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::RangeVar) };
-                visitor.visit_range_var(rv)
-            }
-            // Generic list catch-all — no concrete field context available here.
+            // ... routing for all supported NodeTags ...
             pg_sys::NodeTag::T_List => {
                 let list = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::List) };
                 visitor.visit_list(list)
             }
-            _ => TraversalControl::Continue,
+            _ => visitor.visit_node(self),
         }
     }
 }
@@ -275,9 +210,23 @@ impl PgNodeWalk for pg_sys::Node {
 impl PgNodeWalk for pg_sys::PlannedStmt {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
         if self.commandType == pg_sys::CmdType::CMD_UTILITY && !self.utilityStmt.is_null() {
-            let stmt = unsafe { &*self.utilityStmt };
-            visitor.visit_node(stmt)
+            unsafe { &*self.utilityStmt }.walk(visitor)
         } else {
+            if !self.planTree.is_null() {
+                if visitor.visit_planned_stmt_plan_tree(unsafe { &*self.planTree }).is_break() {
+                    return TraversalControl::Break;
+                }
+            }
+            if !self.rtable.is_null() {
+                if visitor.visit_planned_stmt_rtable(unsafe { &*self.rtable }).is_break() {
+                    return TraversalControl::Break;
+                }
+            }
+            if !self.subplans.is_null() {
+                if visitor.visit_planned_stmt_subplans(unsafe { &*self.subplans }).is_break() {
+                    return TraversalControl::Break;
+                }
+            }
             TraversalControl::Continue
         }
     }
@@ -289,228 +238,87 @@ impl PgNodeWalk for pg_sys::PlannedStmt {
 ```rust
 impl PgNodeWalk for pg_sys::List {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        let list_ptr = self as *const pg_sys::List as *mut pg_sys::List;
-        crate::memcx::current_context(|mcx| unsafe {
-            if let Some(list) = crate::list::List::<*mut core::ffi::c_void>::downcast_ptr_in_memcx(list_ptr, mcx) {
-                for cell_ptr in list.iter() {
-                    if !cell_ptr.is_null() {
-                        let node = &*(*cell_ptr as *const pg_sys::Node);
-                        if visitor.visit_node(node).is_break() {
-                            return TraversalControl::Break;
-                        }
-                    }
-                }
-            }
-            TraversalControl::Continue
-        })
+        // ... iterate over list and call node.walk(visitor) for each element ...
     }
 }
 ```
 
-### 4.3. DDL Node Structs
+### 4.3. DDL and DML Node Structs
 
-Each `*mut RangeVar` and `*mut List` field routes through its own named visitor hook, so the visitor always knows exactly which field it is examining:
+Each `*mut RangeVar`, `*mut List`, or `*mut Plan` field routes through its own named visitor hook or recurses via `walk`, so the visitor always knows exactly which field it is examining:
 
 ```rust
 // CREATE TABLE
-impl PgNodeWalk for pg_sys::CreateStmt {
+impl PgNodeWalk for pg_sys::CreateStmt { ... }
+
+// PLAN (Base for DML)
+impl PgNodeWalk for pg_sys::Plan {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        if !self.relation.is_null() {
-            if visitor.visit_range_var(unsafe { &*self.relation }).is_break() {
+        if !self.targetlist.is_null() {
+            if visitor.visit_plan_target_list(unsafe { &*self.targetlist }).is_break() {
                 return TraversalControl::Break;
             }
         }
-        if !self.tableElts.is_null() {
-            if visitor.visit_create_table_elts(unsafe { &*self.tableElts }).is_break() {
+        if !self.qual.is_null() {
+            if visitor.visit_plan_qual(unsafe { &*self.qual }).is_break() {
                 return TraversalControl::Break;
             }
         }
-        if !self.inhRelations.is_null() {
-            if visitor.visit_create_inh_relations(unsafe { &*self.inhRelations }).is_break() {
+        if !self.lefttree.is_null() {
+            if unsafe { &*(self.lefttree as *const pg_sys::Node) }.walk(visitor).is_break() {
                 return TraversalControl::Break;
             }
         }
-        if !self.constraints.is_null() {
-            if visitor.visit_create_constraints(unsafe { &*self.constraints }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        if !self.options.is_null() {
-            if visitor.visit_create_options(unsafe { &*self.options }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
+        // ...
         TraversalControl::Continue
     }
 }
 
-// ALTER TABLE
-impl PgNodeWalk for pg_sys::AlterTableStmt {
+// SEQ SCAN
+impl PgNodeWalk for pg_sys::SeqScan {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        if !self.relation.is_null() {
-            if visitor.visit_range_var(unsafe { &*self.relation }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        if !self.cmds.is_null() {
-            if visitor.visit_alter_table_cmds(unsafe { &*self.cmds }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        TraversalControl::Continue
-    }
-}
-
-// ALTER TABLE COMMAND
-impl PgNodeWalk for pg_sys::AlterTableCmd {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        // `def` is a generic Node* — no more specific hook available.
-        if !self.def.is_null() {
-            if visitor.visit_node(unsafe { &*self.def }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        TraversalControl::Continue
-    }
-}
-
-// DROP
-impl PgNodeWalk for pg_sys::DropStmt {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        if !self.objects.is_null() {
-            if visitor.visit_drop_objects(unsafe { &*self.objects }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        TraversalControl::Continue
-    }
-}
-
-// TRUNCATE
-impl PgNodeWalk for pg_sys::TruncateStmt {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        if !self.relations.is_null() {
-            if visitor.visit_truncate_relations(unsafe { &*self.relations }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        TraversalControl::Continue
-    }
-}
-
-// CREATE INDEX
-impl PgNodeWalk for pg_sys::IndexStmt {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        if !self.relation.is_null() {
-            if visitor.visit_range_var(unsafe { &*self.relation }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        if !self.indexParams.is_null() {
-            if visitor.visit_index_params(unsafe { &*self.indexParams }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        if !self.indexIncludingParams.is_null() {
-            if visitor.visit_index_including_params(unsafe { &*self.indexIncludingParams }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        if !self.options.is_null() {
-            if visitor.visit_index_options(unsafe { &*self.options }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        if !self.whereClause.is_null() {
-            if visitor.visit_node(unsafe { &*self.whereClause }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-        TraversalControl::Continue
-    }
-}
-
-impl PgNodeWalk for pg_sys::RangeVar {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> TraversalControl {
-        TraversalControl::Continue // leaf node
+        self.scan.plan.walk(visitor)
     }
 }
 ```
 
 ---
 
-## 5. Concrete Example: Table Name Extractor
+## 5. Theoretical Evaluation of DML Support
 
-```rust
-use std::ffi::CStr;
+### 5.1. Appropriateness
+The Visitor pattern is highly appropriate for DML. While DDL statements are "shallow" parse trees, DML plans are "deep" trees of `Plan` nodes. Programmatic traversal is the standard way in PostgreSQL (e.g., `planstate_tree_walker`) to analyze these structures.
 
-pub struct TableNameExtractor {
-    pub extracted_relations: Vec<String>,
-}
+### 5.2. Depth of Traversal
+- **Plan Node Traversal:** Essential for understanding the query strategy (e.g., identifying SeqScans or Joins).
+- **Expression Traversal:** Granularly identifies columns and functions.
+The system prioritizes Plan Node Traversal, but allows optional descent into expressions (via `visit_target_entry` and `visit_plan_qual`).
 
-impl PlannedStmtVisitor for TableNameExtractor {
-    fn visit_range_var(&mut self, range_var: &pg_sys::RangeVar) -> TraversalControl {
-        if !range_var.relname.is_null() {
-            let relname = unsafe { CStr::from_ptr(range_var.relname) };
-            if let Ok(name_str) = relname.to_str() {
-                self.extracted_relations.push(name_str.to_string());
-            }
-        }
-        TraversalControl::Continue
-    }
-}
-
-pub fn extract_ddl_tables(planned_stmt: &pg_sys::PlannedStmt) -> Vec<String> {
-    let mut extractor = TableNameExtractor { extracted_relations: Vec::new() };
-    planned_stmt.walk(&mut extractor);
-    extractor.extracted_relations
-}
-```
-
-A visitor that only cares about `INCLUDE` columns (distinct from indexed columns) can now simply override `visit_index_including_params` without any ambiguity:
-
-```rust
-impl PlannedStmtVisitor for IncludeColumnCollector {
-    fn visit_index_params(&mut self, _list: &pg_sys::List) -> TraversalControl {
-        // Skip: not interested in the indexed columns.
-        TraversalControl::Continue
-    }
-
-    fn visit_index_including_params(&mut self, list: &pg_sys::List) -> TraversalControl {
-        // Only INCLUDE columns arrive here — no need to inspect the pointer.
-        list.walk(self)  // continue into list elements
-    }
-}
-```
+### 5.3. Range Table and Subplans
+The Range Table (`rtable`) is the source of truth for relation access, and `subplans` contain execution trees for non-flattened subqueries. A complete analysis of a DML statement **must** include these, which the `PlannedStmt::walk` implementation ensures.
 
 ---
 
-## 6. Cross-Version Maintenance and Compatibility
+## 6. Concrete Example: Table Access Auditor
 
-Because fields inside structures change between major PostgreSQL versions, we propose two strategies:
+A visitor that identifies all tables accessed by *any* statement (DDL or DML):
 
-### Strategy A: Version-Specific `cfg` Gates
 ```rust
-impl PgNodeWalk for pg_sys::CreateStmt {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
-        // ... common fields ...
+pub struct TableAuditor {
+    pub tables: HashSet<String>,
+}
 
-        #[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16", feature = "pg17", feature = "pg18"))]
-        if !self.partbound.is_null() {
-            if visitor.visit_node(unsafe { &*(self.partbound as *const _ as *const pg_sys::Node) }).is_break() {
-                return TraversalControl::Break;
-            }
-        }
-
+impl PlannedStmtVisitor for TableAuditor {
+    // For DDL
+    fn visit_range_var(&mut self, rv: &pg_sys::RangeVar) -> TraversalControl {
+        self.add_relname(rv.relname);
         TraversalControl::Continue
+    }
+
+    // For DML
+    fn visit_range_tbl_entry(&mut self, rte: &pg_sys::RangeTblEntry) -> TraversalControl {
+        self.add_relid(rte.relid); // Resolve OID to name
+        rte.walk(self) // Recurse into subqueries if any
     }
 }
 ```
-
-### Strategy B: Automatic Code Generation via `pgrx-bindgen` (Recommended)
-Extend `pgrx-bindgen/src/build.rs` to:
-1. Detect all `PgNode` structs (DFS from `NodeTag` roots).
-2. Inspect each field: if it is `*mut RangeVar` or `*mut List`, generate a named visitor hook and the corresponding walk call.
-3. Emit the `PgNodeWalk` impls directly into the per-version generated module.
-
-This guarantees generated walkers are always in sync with the active Postgres target.

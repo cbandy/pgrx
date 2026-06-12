@@ -79,6 +79,12 @@ impl_has_node_tag!(RangeVar, T_RangeVar);
 impl_has_node_tag!(List, [T_List, T_IntList, T_OidList, T_XidList]);
 impl_has_node_tag!(TruncateStmt, T_TruncateStmt);
 impl_has_node_tag!(IndexStmt, T_IndexStmt);
+impl_has_node_tag!(RangeTblEntry, T_RangeTblEntry);
+impl_has_node_tag!(SeqScan, T_SeqScan);
+impl_has_node_tag!(ModifyTable, T_ModifyTable);
+impl_has_node_tag!(Agg, T_Agg);
+impl_has_node_tag!(Sort, T_Sort);
+impl_has_node_tag!(TargetEntry, T_TargetEntry);
 
 pub trait PgNodeTryCast<T> {
     fn try_cast_from(node: T) -> Option<Self>
@@ -208,6 +214,70 @@ pub trait PlannedStmtVisitor {
     fn visit_index_options(&mut self, list: &pg_sys::List) -> TraversalControl {
         self.visit_list(list)
     }
+
+    // DML / Plan hooks
+    fn visit_plan(&mut self, plan: &pg_sys::Plan) -> TraversalControl {
+        let node = unsafe { &*(plan as *const pg_sys::Plan as *const pg_sys::Node) };
+        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        plan.walk(self)
+    }
+
+    fn visit_scan(&mut self, scan: &pg_sys::Scan) -> TraversalControl {
+        if self.visit_plan(&scan.plan).is_break() { return TraversalControl::Break; }
+        // Scan has no Node* fields, but contains scanrelid (RTE index).
+        TraversalControl::Continue
+    }
+
+    fn visit_seq_scan(&mut self, scan: &pg_sys::SeqScan) -> TraversalControl {
+        if self.visit_scan(&scan.scan).is_break() { return TraversalControl::Break; }
+        scan.walk(self)
+    }
+
+    fn visit_modify_table(&mut self, mt: &pg_sys::ModifyTable) -> TraversalControl {
+        if self.visit_plan(&mt.plan).is_break() { return TraversalControl::Break; }
+        mt.walk(self)
+    }
+
+    fn visit_agg(&mut self, agg: &pg_sys::Agg) -> TraversalControl {
+        if self.visit_plan(&agg.plan).is_break() { return TraversalControl::Break; }
+        agg.walk(self)
+    }
+
+    fn visit_sort(&mut self, sort: &pg_sys::Sort) -> TraversalControl {
+        if self.visit_plan(&sort.plan).is_break() { return TraversalControl::Break; }
+        sort.walk(self)
+    }
+
+    fn visit_range_tbl_entry(&mut self, rte: &pg_sys::RangeTblEntry) -> TraversalControl {
+        let node = unsafe { &*(rte as *const pg_sys::RangeTblEntry as *const pg_sys::Node) };
+        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        rte.walk(self)
+    }
+
+    fn visit_target_entry(&mut self, te: &pg_sys::TargetEntry) -> TraversalControl {
+        let node = unsafe { &*(te as *const pg_sys::TargetEntry as *const pg_sys::Node) };
+        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        te.walk(self)
+    }
+
+    // PlannedStmt field hooks
+    fn visit_planned_stmt_rtable(&mut self, list: &pg_sys::List) -> TraversalControl {
+        self.visit_list(list)
+    }
+    fn visit_planned_stmt_subplans(&mut self, list: &pg_sys::List) -> TraversalControl {
+        self.visit_list(list)
+    }
+    fn visit_planned_stmt_plan_tree(&mut self, plan: &pg_sys::Plan) -> TraversalControl {
+        unsafe { &*(plan as *const pg_sys::Plan as *const pg_sys::Node) }.walk(self)
+    }
+
+    // Plan field hooks
+    fn visit_plan_target_list(&mut self, list: &pg_sys::List) -> TraversalControl {
+        self.visit_list(list)
+    }
+    fn visit_plan_qual(&mut self, list: &pg_sys::List) -> TraversalControl {
+        self.visit_list(list)
+    }
 }
 
 impl PgNodeWalk for pg_sys::Node {
@@ -241,24 +311,55 @@ impl PgNodeWalk for pg_sys::Node {
                 let rv = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::RangeVar) };
                 visitor.visit_range_var(rv)
             }
-            pg_sys::NodeTag::T_List => {
+            pg_sys::NodeTag::T_List
+            | pg_sys::NodeTag::T_IntList
+            | pg_sys::NodeTag::T_OidList
+            | pg_sys::NodeTag::T_XidList => {
                 let list = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::List) };
                 visitor.visit_list(list)
             }
-            _ => TraversalControl::Continue,
+            pg_sys::NodeTag::T_RangeTblEntry => {
+                let rte = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::RangeTblEntry) };
+                visitor.visit_range_tbl_entry(rte)
+            }
+            pg_sys::NodeTag::T_SeqScan => {
+                let scan = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::SeqScan) };
+                visitor.visit_seq_scan(scan)
+            }
+            pg_sys::NodeTag::T_ModifyTable => {
+                let mt = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::ModifyTable) };
+                visitor.visit_modify_table(mt)
+            }
+            pg_sys::NodeTag::T_Agg => {
+                let agg = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Agg) };
+                visitor.visit_agg(agg)
+            }
+            pg_sys::NodeTag::T_Sort => {
+                let sort = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Sort) };
+                visitor.visit_sort(sort)
+            }
+            pg_sys::NodeTag::T_TargetEntry => {
+                let te = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::TargetEntry) };
+                visitor.visit_target_entry(te)
+            }
+            _ => visitor.visit_node(self),
         }
     }
 }
 
 impl PgNodeWalk for pg_sys::List {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if self.type_ != pg_sys::NodeTag::T_List {
+            // IntList, OidList, XidList do not contain Node pointers.
+            return TraversalControl::Continue;
+        }
         let list_ptr = self as *const pg_sys::List as *mut pg_sys::List;
         crate::memcx::current_context(|mcx| unsafe {
             if let Some(list) = crate::list::List::<*mut core::ffi::c_void>::downcast_ptr_in_memcx(list_ptr, mcx) {
                 for cell_ptr in list.iter() {
                     if !cell_ptr.is_null() {
                         let node = &*(*cell_ptr as *const pg_sys::Node);
-                        if visitor.visit_node(node).is_break() {
+                        if node.walk(visitor).is_break() {
                             return TraversalControl::Break;
                         }
                     }
@@ -386,11 +487,119 @@ impl PgNodeWalk for pg_sys::RangeVar {
     }
 }
 
+impl PgNodeWalk for pg_sys::RangeTblEntry {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.subquery.is_null() {
+            // RTE_SUBQUERY
+            if visitor.visit_node(unsafe { &*(self.subquery as *const pg_sys::Node) }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::Plan {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.targetlist.is_null() {
+            if visitor.visit_plan_target_list(unsafe { &*self.targetlist }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        if !self.qual.is_null() {
+            if visitor.visit_plan_qual(unsafe { &*self.qual }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        if !self.lefttree.is_null() {
+            if unsafe { &*(self.lefttree as *const pg_sys::Node) }.walk(visitor).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        if !self.righttree.is_null() {
+            if unsafe { &*(self.righttree as *const pg_sys::Node) }.walk(visitor).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        if !self.initPlan.is_null() {
+            if visitor.visit_list(unsafe { &*self.initPlan }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::SeqScan {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> TraversalControl {
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::ModifyTable {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.resultRelations.is_null() {
+            if visitor.visit_list(unsafe { &*self.resultRelations }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::Agg {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.groupingSets.is_null() {
+            if visitor.visit_list(unsafe { &*self.groupingSets }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        if !self.chain.is_null() {
+            if visitor.visit_list(unsafe { &*self.chain }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::Sort {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> TraversalControl {
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::TargetEntry {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.expr.is_null() {
+            if unsafe { &*(self.expr as *const pg_sys::Node) }.walk(visitor).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        TraversalControl::Continue
+    }
+}
+
 impl PgNodeWalk for pg_sys::PlannedStmt {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
         if self.commandType == pg_sys::CmdType::CMD_UTILITY && !self.utilityStmt.is_null() {
-            visitor.visit_node(unsafe { &*self.utilityStmt })
+            unsafe { &*self.utilityStmt }.walk(visitor)
         } else {
+            if !self.planTree.is_null() {
+                if visitor.visit_planned_stmt_plan_tree(unsafe { &*self.planTree }).is_break() {
+                    return TraversalControl::Break;
+                }
+            }
+            if !self.rtable.is_null() {
+                if visitor.visit_planned_stmt_rtable(unsafe { &*self.rtable }).is_break() {
+                    return TraversalControl::Break;
+                }
+            }
+            if !self.subplans.is_null() {
+                if visitor.visit_planned_stmt_subplans(unsafe { &*self.subplans }).is_break() {
+                    return TraversalControl::Break;
+                }
+            }
             TraversalControl::Continue
         }
     }
