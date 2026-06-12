@@ -52,12 +52,27 @@ impl TraversalControl {
     }
 }
 
-pub trait HasNodeTag {
+pub trait AsPgNode {
+    fn as_node(&self) -> &pg_sys::Node;
+    fn as_node_mut(&mut self) -> &mut pg_sys::Node;
+}
+
+pub trait HasNodeTag: AsPgNode {
     const NODE_TAGS: &'static [pg_sys::NodeTag];
 }
 
 macro_rules! impl_has_node_tag {
     ($struct_name:ident, [$($tag_variant:ident),+]) => {
+        impl AsPgNode for pg_sys::$struct_name {
+            #[inline]
+            fn as_node(&self) -> &pg_sys::Node {
+                unsafe { &*(self as *const pg_sys::$struct_name as *const pg_sys::Node) }
+            }
+            #[inline]
+            fn as_node_mut(&mut self) -> &mut pg_sys::Node {
+                unsafe { &mut *(self as *mut pg_sys::$struct_name as *mut pg_sys::Node) }
+            }
+        }
         impl HasNodeTag for pg_sys::$struct_name {
             const NODE_TAGS: &'static [pg_sys::NodeTag] = &[
                 $(pg_sys::NodeTag::$tag_variant),+
@@ -65,6 +80,16 @@ macro_rules! impl_has_node_tag {
         }
     };
     ($struct_name:ident, $tag_variant:ident) => {
+        impl AsPgNode for pg_sys::$struct_name {
+            #[inline]
+            fn as_node(&self) -> &pg_sys::Node {
+                unsafe { &*(self as *const pg_sys::$struct_name as *const pg_sys::Node) }
+            }
+            #[inline]
+            fn as_node_mut(&mut self) -> &mut pg_sys::Node {
+                unsafe { &mut *(self as *mut pg_sys::$struct_name as *mut pg_sys::Node) }
+            }
+        }
         impl HasNodeTag for pg_sys::$struct_name {
             const NODE_TAGS: &'static [pg_sys::NodeTag] = &[pg_sys::NodeTag::$tag_variant];
         }
@@ -85,6 +110,42 @@ impl_has_node_tag!(ModifyTable, T_ModifyTable);
 impl_has_node_tag!(Agg, T_Agg);
 impl_has_node_tag!(Sort, T_Sort);
 impl_has_node_tag!(TargetEntry, T_TargetEntry);
+impl_has_node_tag!(Append, T_Append);
+impl_has_node_tag!(MergeAppend, T_MergeAppend);
+impl_has_node_tag!(Query, T_Query);
+
+impl AsPgNode for pg_sys::Plan {
+    #[inline]
+    fn as_node(&self) -> &pg_sys::Node {
+        unsafe { &*(self as *const pg_sys::Plan as *const pg_sys::Node) }
+    }
+    #[inline]
+    fn as_node_mut(&mut self) -> &mut pg_sys::Node {
+        unsafe { &mut *(self as *mut pg_sys::Plan as *mut pg_sys::Node) }
+    }
+}
+
+impl AsPgNode for pg_sys::Scan {
+    #[inline]
+    fn as_node(&self) -> &pg_sys::Node {
+        unsafe { &*(self as *const pg_sys::Scan as *const pg_sys::Node) }
+    }
+    #[inline]
+    fn as_node_mut(&mut self) -> &mut pg_sys::Node {
+        unsafe { &mut *(self as *mut pg_sys::Scan as *mut pg_sys::Node) }
+    }
+}
+
+impl AsPgNode for pg_sys::Expr {
+    #[inline]
+    fn as_node(&self) -> &pg_sys::Node {
+        unsafe { &*(self as *const pg_sys::Expr as *const pg_sys::Node) }
+    }
+    #[inline]
+    fn as_node_mut(&mut self) -> &mut pg_sys::Node {
+        unsafe { &mut *(self as *mut pg_sys::Expr as *mut pg_sys::Node) }
+    }
+}
 
 pub trait PgNodeTryCast<T> {
     fn try_cast_from(node: T) -> Option<Self>
@@ -124,8 +185,7 @@ pub trait PlannedStmtVisitor {
 
     // Generic list catch-all — used only from Node::walk for unrecognised lists
     fn visit_list(&mut self, list: &pg_sys::List) -> TraversalControl {
-        let node = unsafe { &*(list as *const pg_sys::List as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() {
+        if self.visit_node(list.as_node()).is_break() {
             return TraversalControl::Break;
         }
         list.walk(self)
@@ -133,45 +193,38 @@ pub trait PlannedStmtVisitor {
 
     // Statement-level hooks
     fn visit_create_stmt(&mut self, stmt: &pg_sys::CreateStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::CreateStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(stmt.as_node()).is_break() { return TraversalControl::Break; }
         stmt.walk(self)
     }
 
     fn visit_alter_table_stmt(&mut self, stmt: &pg_sys::AlterTableStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::AlterTableStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(stmt.as_node()).is_break() { return TraversalControl::Break; }
         stmt.walk(self)
     }
 
     fn visit_alter_table_cmd(&mut self, cmd: &pg_sys::AlterTableCmd) -> TraversalControl {
-        let node = unsafe { &*(cmd as *const pg_sys::AlterTableCmd as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(cmd.as_node()).is_break() { return TraversalControl::Break; }
         cmd.walk(self)
     }
 
     fn visit_drop_stmt(&mut self, stmt: &pg_sys::DropStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::DropStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(stmt.as_node()).is_break() { return TraversalControl::Break; }
         stmt.walk(self)
     }
 
     fn visit_truncate_stmt(&mut self, stmt: &pg_sys::TruncateStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::TruncateStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(stmt.as_node()).is_break() { return TraversalControl::Break; }
         stmt.walk(self)
     }
 
     fn visit_index_stmt(&mut self, stmt: &pg_sys::IndexStmt) -> TraversalControl {
-        let node = unsafe { &*(stmt as *const pg_sys::IndexStmt as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(stmt.as_node()).is_break() { return TraversalControl::Break; }
         stmt.walk(self)
     }
 
     // Shared leaf hook
     fn visit_range_var(&mut self, range_var: &pg_sys::RangeVar) -> TraversalControl {
-        let node = unsafe { &*(range_var as *const pg_sys::RangeVar as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(range_var.as_node()).is_break() { return TraversalControl::Break; }
         range_var.walk(self)
     }
 
@@ -217,8 +270,7 @@ pub trait PlannedStmtVisitor {
 
     // DML / Plan hooks
     fn visit_plan(&mut self, plan: &pg_sys::Plan) -> TraversalControl {
-        let node = unsafe { &*(plan as *const pg_sys::Plan as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(plan.as_node()).is_break() { return TraversalControl::Break; }
         plan.walk(self)
     }
 
@@ -248,16 +300,29 @@ pub trait PlannedStmtVisitor {
         sort.walk(self)
     }
 
+    fn visit_append(&mut self, append: &pg_sys::Append) -> TraversalControl {
+        if self.visit_plan(&append.plan).is_break() { return TraversalControl::Break; }
+        append.walk(self)
+    }
+
+    fn visit_merge_append(&mut self, ma: &pg_sys::MergeAppend) -> TraversalControl {
+        if self.visit_plan(&ma.plan).is_break() { return TraversalControl::Break; }
+        ma.walk(self)
+    }
+
     fn visit_range_tbl_entry(&mut self, rte: &pg_sys::RangeTblEntry) -> TraversalControl {
-        let node = unsafe { &*(rte as *const pg_sys::RangeTblEntry as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(rte.as_node()).is_break() { return TraversalControl::Break; }
         rte.walk(self)
     }
 
     fn visit_target_entry(&mut self, te: &pg_sys::TargetEntry) -> TraversalControl {
-        let node = unsafe { &*(te as *const pg_sys::TargetEntry as *const pg_sys::Node) };
-        if self.visit_node(node).is_break() { return TraversalControl::Break; }
+        if self.visit_node(te.as_node()).is_break() { return TraversalControl::Break; }
         te.walk(self)
+    }
+
+    fn visit_query(&mut self, query: &pg_sys::Query) -> TraversalControl {
+        if self.visit_node(query.as_node()).is_break() { return TraversalControl::Break; }
+        query.walk(self)
     }
 
     // PlannedStmt field hooks
@@ -268,7 +333,7 @@ pub trait PlannedStmtVisitor {
         self.visit_list(list)
     }
     fn visit_planned_stmt_plan_tree(&mut self, plan: &pg_sys::Plan) -> TraversalControl {
-        unsafe { &*(plan as *const pg_sys::Plan as *const pg_sys::Node) }.walk(self)
+        plan.as_node().walk(self)
     }
 
     // Plan field hooks
@@ -276,6 +341,21 @@ pub trait PlannedStmtVisitor {
         self.visit_list(list)
     }
     fn visit_plan_qual(&mut self, list: &pg_sys::List) -> TraversalControl {
+        self.visit_list(list)
+    }
+
+    // ModifyTable field hooks
+    fn visit_modify_table_result_relations(&mut self, list: &pg_sys::List) -> TraversalControl {
+        self.visit_list(list)
+    }
+
+    // Append field hooks
+    fn visit_append_plans(&mut self, list: &pg_sys::List) -> TraversalControl {
+        self.visit_list(list)
+    }
+
+    // MergeAppend field hooks
+    fn visit_merge_append_plans(&mut self, list: &pg_sys::List) -> TraversalControl {
         self.visit_list(list)
     }
 }
@@ -341,6 +421,18 @@ impl PgNodeWalk for pg_sys::Node {
             pg_sys::NodeTag::T_TargetEntry => {
                 let te = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::TargetEntry) };
                 visitor.visit_target_entry(te)
+            }
+            pg_sys::NodeTag::T_Append => {
+                let append = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Append) };
+                visitor.visit_append(append)
+            }
+            pg_sys::NodeTag::T_MergeAppend => {
+                let ma = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::MergeAppend) };
+                visitor.visit_merge_append(ma)
+            }
+            pg_sys::NodeTag::T_Query => {
+                let query = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Query) };
+                visitor.visit_query(query)
             }
             _ => visitor.visit_node(self),
         }
@@ -491,10 +583,27 @@ impl PgNodeWalk for pg_sys::RangeTblEntry {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
         if !self.subquery.is_null() {
             // RTE_SUBQUERY
-            if visitor.visit_node(unsafe { &*(self.subquery as *const pg_sys::Node) }).is_break() {
+            if unsafe { &*self.subquery }.as_node().walk(visitor).is_break() {
                 return TraversalControl::Break;
             }
         }
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::Query {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.utilityStmt.is_null() {
+            if unsafe { &*self.utilityStmt }.walk(visitor).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        if !self.rtable.is_null() {
+            if visitor.visit_list(unsafe { &*self.rtable }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        // Jointree and other fields omitted for now in manual strategy
         TraversalControl::Continue
     }
 }
@@ -512,12 +621,12 @@ impl PgNodeWalk for pg_sys::Plan {
             }
         }
         if !self.lefttree.is_null() {
-            if unsafe { &*(self.lefttree as *const pg_sys::Node) }.walk(visitor).is_break() {
+            if unsafe { &*self.lefttree }.as_node().walk(visitor).is_break() {
                 return TraversalControl::Break;
             }
         }
         if !self.righttree.is_null() {
-            if unsafe { &*(self.righttree as *const pg_sys::Node) }.walk(visitor).is_break() {
+            if unsafe { &*self.righttree }.as_node().walk(visitor).is_break() {
                 return TraversalControl::Break;
             }
         }
@@ -538,8 +647,14 @@ impl PgNodeWalk for pg_sys::SeqScan {
 
 impl PgNodeWalk for pg_sys::ModifyTable {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        // outerPlan(mt) is the source plan
+        if !self.plan.lefttree.is_null() {
+            if unsafe { &*self.plan.lefttree }.as_node().walk(visitor).is_break() {
+                return TraversalControl::Break;
+            }
+        }
         if !self.resultRelations.is_null() {
-            if visitor.visit_list(unsafe { &*self.resultRelations }).is_break() {
+            if visitor.visit_modify_table_result_relations(unsafe { &*self.resultRelations }).is_break() {
                 return TraversalControl::Break;
             }
         }
@@ -569,10 +684,32 @@ impl PgNodeWalk for pg_sys::Sort {
     }
 }
 
+impl PgNodeWalk for pg_sys::Append {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.appendplans.is_null() {
+            if visitor.visit_append_plans(unsafe { &*self.appendplans }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        TraversalControl::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::MergeAppend {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
+        if !self.mergeplans.is_null() {
+            if visitor.visit_merge_append_plans(unsafe { &*self.mergeplans }).is_break() {
+                return TraversalControl::Break;
+            }
+        }
+        TraversalControl::Continue
+    }
+}
+
 impl PgNodeWalk for pg_sys::TargetEntry {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> TraversalControl {
         if !self.expr.is_null() {
-            if unsafe { &*(self.expr as *const pg_sys::Node) }.walk(visitor).is_break() {
+            if unsafe { &*self.expr }.as_node().walk(visitor).is_break() {
                 return TraversalControl::Break;
             }
         }
