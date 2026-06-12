@@ -128,11 +128,27 @@ has_node_tag!(MergeJoin, T_MergeJoin);
 has_node_tag!(HashJoin, T_HashJoin);
 has_node_tag!(Material, T_Material);
 has_node_tag!(Limit, T_Limit);
+has_node_tag!(BitmapAnd, T_BitmapAnd);
+has_node_tag!(BitmapOr, T_BitmapOr);
+has_node_tag!(PartitionedRelPruneInfo, T_PartitionedRelPruneInfo);
+has_node_tag!(PartitionPruneStepOp, T_PartitionPruneStepOp);
+has_node_tag!(PartitionPruneStepCombine, T_PartitionPruneStepCombine);
+has_node_tag!(RecursiveUnion, T_RecursiveUnion);
+has_node_tag!(ValuesScan, T_ValuesScan);
+has_node_tag!(CteScan, T_CteScan);
+has_node_tag!(Gather, T_Gather);
+has_node_tag!(GatherMerge, T_GatherMerge);
+has_node_tag!(Hash, T_Hash);
+has_node_tag!(LockRows, T_LockRows);
+has_node_tag!(WindowAgg, T_WindowAgg);
+has_node_tag!(Unique, T_Unique);
+has_node_tag!(SetOp, T_SetOp);
 
 as_pg_node!(Plan);
 as_pg_node!(Scan);
 as_pg_node!(Expr);
 as_pg_node!(Join);
+as_pg_node!(PartitionPruneStep);
 
 pub trait PgNodeTryCast<T> {
     fn try_cast_from(node: T) -> Option<Self>
@@ -162,6 +178,17 @@ impl<'a, B: HasNodeTag> PgNodeTryCast<&'a mut pg_sys::Node> for &'a mut B {
 
 pub trait PgNodeWalk {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal;
+}
+
+macro_rules! impl_pg_node_walk {
+    ($struct_name:ident) => {
+        impl PgNodeWalk for pg_sys::$struct_name {
+            #[inline]
+            fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
+                Traversal::Continue
+            }
+        }
+    };
 }
 
 pub trait PlannedStmtVisitor {
@@ -244,6 +271,11 @@ pub trait PlannedStmtVisitor {
         self.visit_list(list)
     }
 
+    // ValuesScan field hooks
+    fn visit_values_scan_lists(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
     // IndexStmt field hooks — each is distinct, allowing unambiguous overrides
     fn visit_index_params(&mut self, list: &pg_sys::List) -> Traversal {
         self.visit_list(list)
@@ -257,8 +289,7 @@ pub trait PlannedStmtVisitor {
 
     // DML / Plan hooks
     fn visit_plan(&mut self, plan: &pg_sys::Plan) -> Traversal {
-        if self.visit_node(plan.as_node()).is_break() { return Traversal::Break; }
-        plan.walk(self)
+        self.visit_node(plan.as_node())
     }
 
     fn visit_result(&mut self, res: &pg_sys::Result) -> Traversal {
@@ -272,9 +303,7 @@ pub trait PlannedStmtVisitor {
     }
 
     fn visit_scan(&mut self, scan: &pg_sys::Scan) -> Traversal {
-        if self.visit_plan(&scan.plan).is_break() { return Traversal::Break; }
-        // Scan has no Node* fields, but contains scanrelid (RTE index).
-        Traversal::Continue
+        self.visit_plan(&scan.plan)
     }
 
     fn visit_seq_scan(&mut self, scan: &pg_sys::SeqScan) -> Traversal {
@@ -313,8 +342,7 @@ pub trait PlannedStmtVisitor {
     }
 
     fn visit_join(&mut self, join: &pg_sys::Join) -> Traversal {
-        if self.visit_plan(&join.plan).is_break() { return Traversal::Break; }
-        join.walk(self)
+        self.visit_plan(&join.plan)
     }
 
     fn visit_nest_loop(&mut self, join: &pg_sys::NestLoop) -> Traversal {
@@ -367,6 +395,66 @@ pub trait PlannedStmtVisitor {
         ma.walk(self)
     }
 
+    fn visit_recursive_union(&mut self, join: &pg_sys::RecursiveUnion) -> Traversal {
+        if self.visit_plan(&join.plan).is_break() { return Traversal::Break; }
+        join.walk(self)
+    }
+
+    fn visit_values_scan(&mut self, scan: &pg_sys::ValuesScan) -> Traversal {
+        if self.visit_scan(&scan.scan).is_break() { return Traversal::Break; }
+        scan.walk(self)
+    }
+
+    fn visit_cte_scan(&mut self, scan: &pg_sys::CteScan) -> Traversal {
+        if self.visit_scan(&scan.scan).is_break() { return Traversal::Break; }
+        scan.walk(self)
+    }
+
+    fn visit_gather(&mut self, gather: &pg_sys::Gather) -> Traversal {
+        if self.visit_plan(&gather.plan).is_break() { return Traversal::Break; }
+        gather.walk(self)
+    }
+
+    fn visit_gather_merge(&mut self, gather: &pg_sys::GatherMerge) -> Traversal {
+        if self.visit_plan(&gather.plan).is_break() { return Traversal::Break; }
+        gather.walk(self)
+    }
+
+    fn visit_hash(&mut self, hash: &pg_sys::Hash) -> Traversal {
+        if self.visit_plan(&hash.plan).is_break() { return Traversal::Break; }
+        hash.walk(self)
+    }
+
+    fn visit_lock_rows(&mut self, lock: &pg_sys::LockRows) -> Traversal {
+        if self.visit_plan(&lock.plan).is_break() { return Traversal::Break; }
+        lock.walk(self)
+    }
+
+    fn visit_window_agg(&mut self, agg: &pg_sys::WindowAgg) -> Traversal {
+        if self.visit_plan(&agg.plan).is_break() { return Traversal::Break; }
+        agg.walk(self)
+    }
+
+    fn visit_unique(&mut self, unique: &pg_sys::Unique) -> Traversal {
+        if self.visit_plan(&unique.plan).is_break() { return Traversal::Break; }
+        unique.walk(self)
+    }
+
+    fn visit_set_op(&mut self, setop: &pg_sys::SetOp) -> Traversal {
+        if self.visit_plan(&setop.plan).is_break() { return Traversal::Break; }
+        setop.walk(self)
+    }
+
+    fn visit_bitmap_and(&mut self, ba: &pg_sys::BitmapAnd) -> Traversal {
+        if self.visit_plan(&ba.plan).is_break() { return Traversal::Break; }
+        ba.walk(self)
+    }
+
+    fn visit_bitmap_or(&mut self, bo: &pg_sys::BitmapOr) -> Traversal {
+        if self.visit_plan(&bo.plan).is_break() { return Traversal::Break; }
+        bo.walk(self)
+    }
+
     fn visit_range_tbl_entry(&mut self, rte: &pg_sys::RangeTblEntry) -> Traversal {
         if self.visit_node(rte.as_node()).is_break() { return Traversal::Break; }
         rte.walk(self)
@@ -385,6 +473,25 @@ pub trait PlannedStmtVisitor {
     fn visit_partition_prune_info(&mut self, info: &pg_sys::PartitionPruneInfo) -> Traversal {
         if self.visit_node(info.as_node()).is_break() { return Traversal::Break; }
         info.walk(self)
+    }
+
+    fn visit_partitioned_rel_prune_info(&mut self, info: &pg_sys::PartitionedRelPruneInfo) -> Traversal {
+        if self.visit_node(info.as_node()).is_break() { return Traversal::Break; }
+        info.walk(self)
+    }
+
+    fn visit_partition_prune_step(&mut self, step: &pg_sys::PartitionPruneStep) -> Traversal {
+        self.visit_node(step.as_node())
+    }
+
+    fn visit_partition_prune_step_op(&mut self, step: &pg_sys::PartitionPruneStepOp) -> Traversal {
+        if self.visit_partition_prune_step(&step.step).is_break() { return Traversal::Break; }
+        step.walk(self)
+    }
+
+    fn visit_partition_prune_step_combine(&mut self, step: &pg_sys::PartitionPruneStepCombine) -> Traversal {
+        if self.visit_partition_prune_step(&step.step).is_break() { return Traversal::Break; }
+        step.walk(self)
     }
 
     fn visit_plan_row_mark(&mut self, mark: &pg_sys::PlanRowMark) -> Traversal {
@@ -446,6 +553,16 @@ pub trait PlannedStmtVisitor {
         self.visit_list(list)
     }
 
+    // MergeJoin field hooks
+    fn visit_merge_join_clauses(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
+    // HashJoin field hooks
+    fn visit_hash_join_clauses(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
     // ModifyTable field hooks
     fn visit_modify_table_result_relations(&mut self, list: &pg_sys::List) -> Traversal {
         self.visit_list(list)
@@ -471,6 +588,26 @@ pub trait PlannedStmtVisitor {
 
     // PartitionPruneInfo field hooks
     fn visit_partition_prune_infos(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
+    // PartitionedRelPruneInfo field hooks
+    fn visit_pruning_steps(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
+    // BitmapAnd/Or field hooks
+    fn visit_bitmap_plans(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
+    // Hash field hooks
+    fn visit_hash_keys(&mut self, list: &pg_sys::List) -> Traversal {
+        self.visit_list(list)
+    }
+
+    // LockRows field hooks
+    fn visit_lock_rows_marks(&mut self, list: &pg_sys::List) -> Traversal {
         self.visit_list(list)
     }
 }
@@ -621,6 +758,66 @@ impl PgNodeWalk for pg_sys::Node {
                 let limit = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Limit) };
                 visitor.visit_limit(limit)
             }
+            pg_sys::NodeTag::T_BitmapAnd => {
+                let ba = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::BitmapAnd) };
+                visitor.visit_bitmap_and(ba)
+            }
+            pg_sys::NodeTag::T_BitmapOr => {
+                let bo = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::BitmapOr) };
+                visitor.visit_bitmap_or(bo)
+            }
+            pg_sys::NodeTag::T_PartitionedRelPruneInfo => {
+                let info = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::PartitionedRelPruneInfo) };
+                visitor.visit_partitioned_rel_prune_info(info)
+            }
+            pg_sys::NodeTag::T_PartitionPruneStepOp => {
+                let step = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::PartitionPruneStepOp) };
+                visitor.visit_partition_prune_step_op(step)
+            }
+            pg_sys::NodeTag::T_PartitionPruneStepCombine => {
+                let step = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::PartitionPruneStepCombine) };
+                visitor.visit_partition_prune_step_combine(step)
+            }
+            pg_sys::NodeTag::T_RecursiveUnion => {
+                let union = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::RecursiveUnion) };
+                visitor.visit_recursive_union(union)
+            }
+            pg_sys::NodeTag::T_ValuesScan => {
+                let scan = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::ValuesScan) };
+                visitor.visit_values_scan(scan)
+            }
+            pg_sys::NodeTag::T_CteScan => {
+                let scan = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::CteScan) };
+                visitor.visit_cte_scan(scan)
+            }
+            pg_sys::NodeTag::T_Gather => {
+                let gather = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Gather) };
+                visitor.visit_gather(gather)
+            }
+            pg_sys::NodeTag::T_GatherMerge => {
+                let gather = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::GatherMerge) };
+                visitor.visit_gather_merge(gather)
+            }
+            pg_sys::NodeTag::T_Hash => {
+                let hash = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Hash) };
+                visitor.visit_hash(hash)
+            }
+            pg_sys::NodeTag::T_LockRows => {
+                let lock = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::LockRows) };
+                visitor.visit_lock_rows(lock)
+            }
+            pg_sys::NodeTag::T_WindowAgg => {
+                let agg = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::WindowAgg) };
+                visitor.visit_window_agg(agg)
+            }
+            pg_sys::NodeTag::T_Unique => {
+                let unique = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::Unique) };
+                visitor.visit_unique(unique)
+            }
+            pg_sys::NodeTag::T_SetOp => {
+                let setop = unsafe { &*(self as *const pg_sys::Node as *const pg_sys::SetOp) };
+                visitor.visit_set_op(setop)
+            }
             _ => visitor.visit_node(self),
         }
     }
@@ -760,11 +957,7 @@ impl PgNodeWalk for pg_sys::IndexStmt {
     }
 }
 
-impl PgNodeWalk for pg_sys::RangeVar {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
-        Traversal::Continue
-    }
-}
+impl_pg_node_walk!(RangeVar);
 
 impl PgNodeWalk for pg_sys::RangeTblEntry {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
@@ -837,17 +1030,9 @@ impl PgNodeWalk for pg_sys::Result {
     }
 }
 
-impl PgNodeWalk for pg_sys::ProjectSet {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
-        Traversal::Continue
-    }
-}
-
-impl PgNodeWalk for pg_sys::SeqScan {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
-        Traversal::Continue
-    }
-}
+impl_pg_node_walk!(ProjectSet);
+impl_pg_node_walk!(Scan);
+impl_pg_node_walk!(SeqScan);
 
 impl PgNodeWalk for pg_sys::IndexScan {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
@@ -892,11 +1077,7 @@ impl PgNodeWalk for pg_sys::BitmapIndexScan {
     }
 }
 
-impl PgNodeWalk for pg_sys::BitmapHeapScan {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
-        Traversal::Continue
-    }
-}
+impl_pg_node_walk!(BitmapHeapScan);
 
 impl PgNodeWalk for pg_sys::TidScan {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
@@ -931,29 +1112,30 @@ impl PgNodeWalk for pg_sys::Join {
     }
 }
 
-impl PgNodeWalk for pg_sys::NestLoop {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
-        self.join.walk(visitor)
-    }
-}
+impl_pg_node_walk!(NestLoop);
 
 impl PgNodeWalk for pg_sys::MergeJoin {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
-        self.join.walk(visitor)
+        if !self.mergeclauses.is_null() {
+            if visitor.visit_merge_join_clauses(unsafe { &*self.mergeclauses }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
     }
 }
 
 impl PgNodeWalk for pg_sys::HashJoin {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
-        self.join.walk(visitor)
-    }
-}
-
-impl PgNodeWalk for pg_sys::Material {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
+        if !self.hashclauses.is_null() {
+            if visitor.visit_hash_join_clauses(unsafe { &*self.hashclauses }).is_break() {
+                return Traversal::Break;
+            }
+        }
         Traversal::Continue
     }
 }
+impl_pg_node_walk!(Material);
 
 impl PgNodeWalk for pg_sys::Limit {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
@@ -998,11 +1180,7 @@ impl PgNodeWalk for pg_sys::Agg {
     }
 }
 
-impl PgNodeWalk for pg_sys::Sort {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
-        Traversal::Continue
-    }
-}
+impl_pg_node_walk!(Sort);
 
 impl PgNodeWalk for pg_sys::Append {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
@@ -1026,10 +1204,75 @@ impl PgNodeWalk for pg_sys::MergeAppend {
     }
 }
 
+impl PgNodeWalk for pg_sys::BitmapAnd {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.bitmapplans.is_null() {
+            if visitor.visit_bitmap_plans(unsafe { &*self.bitmapplans }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::BitmapOr {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.bitmapplans.is_null() {
+            if visitor.visit_bitmap_plans(unsafe { &*self.bitmapplans }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl_pg_node_walk!(RecursiveUnion);
+
+impl PgNodeWalk for pg_sys::ValuesScan {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.values_lists.is_null() {
+            if visitor.visit_values_scan_lists(unsafe { &*self.values_lists }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl_pg_node_walk!(CteScan);
+impl_pg_node_walk!(Gather);
+impl_pg_node_walk!(GatherMerge);
+
+impl PgNodeWalk for pg_sys::Hash {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.hashkeys.is_null() {
+            if visitor.visit_hash_keys(unsafe { &*self.hashkeys }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl PgNodeWalk for pg_sys::LockRows {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.rowMarks.is_null() {
+            if visitor.visit_lock_rows_marks(unsafe { &*self.rowMarks }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        Traversal::Continue
+    }
+}
+
+impl_pg_node_walk!(WindowAgg);
+impl_pg_node_walk!(Unique);
+impl_pg_node_walk!(SetOp);
+
 impl PgNodeWalk for pg_sys::TargetEntry {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
         if !self.expr.is_null() {
-            if unsafe { &*(self.expr as *const pg_sys::Node) }.walk(visitor).is_break() {
+            if unsafe { &*self.expr }.as_node().walk(visitor).is_break() {
                 return Traversal::Break;
             }
         }
@@ -1048,17 +1291,36 @@ impl PgNodeWalk for pg_sys::PartitionPruneInfo {
     }
 }
 
-impl PgNodeWalk for pg_sys::PlanRowMark {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
+impl PgNodeWalk for pg_sys::PartitionedRelPruneInfo {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.initial_pruning_steps.is_null() {
+            if visitor.visit_pruning_steps(unsafe { &*self.initial_pruning_steps }).is_break() {
+                return Traversal::Break;
+            }
+        }
+        if !self.exec_pruning_steps.is_null() {
+            if visitor.visit_pruning_steps(unsafe { &*self.exec_pruning_steps }).is_break() {
+                return Traversal::Break;
+            }
+        }
         Traversal::Continue
     }
 }
 
-impl PgNodeWalk for pg_sys::RTEPermissionInfo {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
+impl PgNodeWalk for pg_sys::PartitionPruneStepOp {
+    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
+        if !self.exprs.is_null() {
+            if visitor.visit_list(unsafe { &*self.exprs }).is_break() {
+                return Traversal::Break;
+            }
+        }
         Traversal::Continue
     }
 }
+
+impl_pg_node_walk!(PartitionPruneStepCombine);
+impl_pg_node_walk!(PlanRowMark);
+impl_pg_node_walk!(RTEPermissionInfo);
 
 impl PgNodeWalk for pg_sys::AppendRelInfo {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {
@@ -1071,11 +1333,7 @@ impl PgNodeWalk for pg_sys::AppendRelInfo {
     }
 }
 
-impl PgNodeWalk for pg_sys::PlanInvalItem {
-    fn walk<V: PlannedStmtVisitor + ?Sized>(&self, _visitor: &mut V) -> Traversal {
-        Traversal::Continue
-    }
-}
+impl_pg_node_walk!(PlanInvalItem);
 
 impl PgNodeWalk for pg_sys::PlannedStmt {
     fn walk<V: PlannedStmtVisitor + ?Sized>(&self, visitor: &mut V) -> Traversal {

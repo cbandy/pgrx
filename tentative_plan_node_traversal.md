@@ -2,7 +2,7 @@
 
 In PostgreSQL, the planner produces a `PlannedStmt` for all statements.
 - **Utility/DDL commands** (like `CREATE TABLE`, `ALTER TABLE`, etc.) are wrapped inside a `PlannedStmt` with `commandType == CmdType::CMD_UTILITY`. The raw parse tree is preserved in the `utilityStmt` field.
-- **DML statements** (like `SELECT`, `UPDATE`, `INSERT`, `DELETE`, and `MERGE`) contain structured query plan trees in the `planTree` field, along with auxiliary information like the `rtable` (range table) and `subplans`.
+- **DML statements** (like `SELECT`, `UPDATE`, `INSERT`, `DELETE`, and `MERGE`) contain structured query plan trees in the `planTree` field, along with auxiliary information like the `rtable` (range table), `permInfos` (permissions), `rowMarks` (locking), and `subplans`.
 
 As noted in `postgres/src/backend/nodes/README`, output serialization (such as `nodeToString` or `outNode`) for utility statements and raw parse trees is incomplete and largely unsupported. Therefore, analyzing or inspecting planned statements requires programmatically traversing the in-memory node trees.
 
@@ -31,7 +31,7 @@ pub enum Traversal {
 
 ### 2.1. Safe Upcasting with `AsPgNode`
 
-To avoid manual and repetitive `unsafe` casts to `pg_sys::Node`, we provide the `AsPgNode` trait. This trait is automatically implemented for all supported nodes via the `has_node_tag!` macro.
+To avoid manual and repetitive `unsafe` casts to `pg_sys::Node`, we provide the `AsPgNode` trait. This trait is automatically implemented for all supported nodes via the `has_node_tag!` and `as_pg_node!` macros.
 
 ```rust
 pub trait AsPgNode {
@@ -60,16 +60,6 @@ has_node_tag!(List, [T_List, T_IntList, T_OidList, T_XidList]);
 // ... other DDL and DML nodes ...
 ```
 
-### 2.3. Downcasting Trait
-
-`PgNodeTryCast` performs fallible downcasting.
-
-```rust
-pub trait PgNodeTryCast<T> {
-    fn try_cast_from(node: T) -> Option<Self> where Self: Sized;
-}
-```
-
 ---
 
 ## 3. Traversal and Visitor Traits
@@ -85,7 +75,7 @@ For DML statements, the visitor provides hooks for `Plan` nodes and auxiliary st
 - **`visit_planned_stmt_plan_tree`**: The entry point for the execution plan.
 - **`visit_planned_stmt_rtable`**: Allows inspection of the Range Table (the relations involved).
 - **`visit_planned_stmt_subplans`**: Allows inspection of subqueries.
-- **Plan Hooks**: Hierarchical hooks for plan types like `visit_seq_scan`, `visit_scan`, and `visit_plan`.
+- **Hierarchical Plan Hooks**: Hooks for plan types like `visit_seq_scan`, `visit_scan`, and `visit_plan`.
 
 ```rust
 pub trait PlannedStmtVisitor {
@@ -145,7 +135,7 @@ impl PgNodeWalk for pg_sys::PlannedStmt {
         if self.commandType == pg_sys::CmdType::CMD_UTILITY && !self.utilityStmt.is_null() {
             return unsafe { &*self.utilityStmt }.walk(visitor);
         }
-        // ... walk planTree, rtable, subplans, permInfos, etc. ...
+        // ... walk planTree, rtable, subplans, permInfos, rowMarks, invalItems, etc. ...
         Traversal::Continue
     }
 }
