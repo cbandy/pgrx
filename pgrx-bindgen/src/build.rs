@@ -546,15 +546,78 @@ fn impl_pg_node(items: &[syn::Item]) -> eyre::Result<proc_macro2::TokenStream> {
         dfs_find_nodes(root, &struct_graph, &mut node_set);
     }
 
-    // now we can finally iterate the Nodes and emit out Display impl
-    for node_struct in node_set.into_iter() {
+    let mut node_tags = BTreeSet::new();
+    for item in items {
+        if let syn::Item::Enum(item_enum) = item {
+            if item_enum.ident == "NodeTag" {
+                for variant in &item_enum.variants {
+                    node_tags.insert(variant.ident.to_string());
+                }
+            }
+        }
+    }
+
+    let mut alias_tags = HashMap::new();
+    for item in items {
+        if let syn::Item::Type(item_type) = item {
+            let alias_name = item_type.ident.to_string();
+            if let syn::Type::Path(p) = &*item_type.ty {
+                if let Some(last_segment) = p.path.segments.last() {
+                    let target_name = last_segment.ident.to_string();
+                    let tag_name = format!("T_{}", alias_name);
+                    if node_tags.contains(&tag_name) {
+                        alias_tags.entry(target_name).or_insert_with(Vec::new).push(tag_name);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut node_map = HashMap::new();
+    for descriptor in &node_set {
+        node_map.insert(descriptor.struct_.ident.to_string(), descriptor);
+    }
+
+    let mut memo = HashMap::new();
+
+    // now we can finally iterate the Nodes and emit out PgNode impl
+    for node_struct in &node_set {
         let struct_name = &node_struct.struct_.ident;
+        let struct_name_str = struct_name.to_string();
+        let cast_tags = get_cast_tags(
+            &struct_name_str,
+            &node_map,
+            &struct_graph,
+            &node_tags,
+            &alias_tags,
+            &mut memo,
+        );
+        let cast_tags_idents: Vec<syn::Ident> =
+            cast_tags.iter().map(|t| syn::Ident::new(t, proc_macro2::Span::call_site())).collect();
 
         // impl the PgNode trait for all nodes
-        pgnode_impls.extend(quote! {
-            impl pg_sys::seal::Sealed for #struct_name {}
-            impl pg_sys::PgNode for #struct_name {}
-        });
+        if struct_name == "Node" {
+            pgnode_impls.extend(quote! {
+                impl pg_sys::seal::Sealed for #struct_name {}
+                impl pg_sys::PgNode for #struct_name {
+                    const CAST_TAGS: &'static [pg_sys::NodeTag] = &[];
+
+                    #[inline]
+                    fn try_cast<T: pg_sys::PgNode>(node: &T) -> Option<&Self> {
+                        Some(node.as_node())
+                    }
+                }
+            });
+        } else {
+            pgnode_impls.extend(quote! {
+                impl pg_sys::seal::Sealed for #struct_name {}
+                impl pg_sys::PgNode for #struct_name {
+                    const CAST_TAGS: &'static [pg_sys::NodeTag] = &[
+                        #(pg_sys::NodeTag::#cast_tags_idents),*
+                    ];
+                }
+            });
+        }
 
         // impl Rust's Display trait for all nodes
         pgnode_impls.extend(quote! {
@@ -567,6 +630,47 @@ fn impl_pg_node(items: &[syn::Item]) -> eyre::Result<proc_macro2::TokenStream> {
     }
 
     Ok(pgnode_impls)
+}
+
+fn get_cast_tags(
+    struct_name: &str,
+    node_map: &HashMap<String, &StructDescriptor>,
+    struct_graph: &StructGraph,
+    node_tags: &BTreeSet<String>,
+    alias_tags: &HashMap<String, Vec<String>>,
+    memo: &mut HashMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    if let Some(tags) = memo.get(struct_name) {
+        return tags.clone();
+    }
+
+    let mut tags = BTreeSet::new();
+
+    // 1. Self tag
+    let self_tag = format!("T_{}", struct_name);
+    if node_tags.contains(&self_tag) {
+        tags.insert(self_tag);
+    }
+
+    // 2. Alias tags
+    if let Some(aliases) = alias_tags.get(struct_name) {
+        for alias in aliases {
+            tags.insert(alias.clone());
+        }
+    }
+
+    // 3. Descendant tags
+    if let Some(descriptor) = node_map.get(struct_name) {
+        for child in descriptor.children(struct_graph) {
+            let child_name = child.struct_.ident.to_string();
+            let child_tags =
+                get_cast_tags(&child_name, node_map, struct_graph, node_tags, alias_tags, memo);
+            tags.extend(child_tags);
+        }
+    }
+
+    memo.insert(struct_name.to_string(), tags.clone());
+    tags
 }
 
 /// Given a root node, dfs_find_nodes adds all its children nodes to `node_set`.
