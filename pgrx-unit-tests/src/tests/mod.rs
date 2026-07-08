@@ -42,6 +42,7 @@ mod log_tests;
 mod long_name_tests;
 mod memcxt_tests;
 mod name_tests;
+mod node_tests;
 mod numeric_tests;
 mod oid_tests;
 mod pg_cast_tests;
